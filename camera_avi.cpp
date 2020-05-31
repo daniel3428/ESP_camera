@@ -2,10 +2,17 @@
 #include "esp_camera.h"
 #include "Arduino.h"
 #include "FS.h"                // SD Card ESP32
-#include "SD_MMC.h"            // SD Card ESP32
+//#include "SD_MMC.h"            // SD Card ESP32
 #include "soc/soc.h"           // Disable brownour problems
 #include "soc/rtc_cntl_reg.h"  // Disable brownour problems
 #include "driver/rtc_io.h"
+
+// MicroSD
+#include "driver/sdmmc_host.h"
+#include "driver/sdmmc_defs.h"
+#include "sdmmc_cmd.h"
+#include "esp_vfs_fat.h"
+#include <SD_MMC.h>
 
 #include <WiFi.h>
 
@@ -39,7 +46,6 @@
 // EDIT ssid and password
 const char ssid[] = "DLWiFiNo";           // your wireless network name (SSID)
 const char password[] = "13572468";  // your Wi-Fi network password
-static const char devname[] = "desklens";         // name of your camera for mDNS, Router, and filenames
 
 char localip[20];
 char strftime_buf[64];
@@ -55,7 +61,7 @@ bool init_wifi()
   WiFi.disconnect(true);
   WiFi.mode(WIFI_STA);
 
-  WiFi.setHostname(devname);
+  //WiFi.setHostname(devname);
   //WiFi.printDiag(Serial);
   WiFi.begin(ssid, password);
   delay(1000);
@@ -104,6 +110,75 @@ bool init_wifi()
 
   return true;
 
+}
+
+void SD_MMC_init() {
+  esp_err_t ret = ESP_FAIL;
+  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  host.flags = SDMMC_HOST_FLAG_1BIT;                       // using 1 bit mode
+  host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+  sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+  slot_config.width = 1;                                   // using 1 bit mode
+  //Serial.print("Slot config width should be 4 width:  "); Serial.println(slot_config.width);
+  esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+    .format_if_mount_failed = false,
+    .max_files = 5,
+  };
+
+  //pinMode(4, OUTPUT);                 // using 1 bit mode, shut off the Blinding Disk-Active Light
+  //digitalWrite(4, LOW);
+
+  sdmmc_card_t *card;
+
+  Serial.println("Mounting SD card...");
+  ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+
+  if (ret == ESP_OK) {
+    Serial.println("SD card mount successfully!");
+  }  else  {
+    Serial.printf("Failed to mount SD card VFAT filesystem. Error: %s", esp_err_to_name(ret));
+  }
+  sdmmc_card_print_info(stdout, card);
+  Serial.print("SD_MMC Begin: "); Serial.println(SD_MMC.begin());   // required by ftp system ??
+}
+
+void SD_MMC_save() {
+    
+  camera_fb_t * fb = NULL;
+  
+  // Take Picture with Camera
+  fb = esp_camera_fb_get();  
+  if(!fb) {
+    Serial.println("Camera capture failed");
+    return;
+  }
+
+  time_t now ;
+  time(&now);
+  localtime_r(&now, &timeinfo);
+  strftime(strftime_buf, sizeof(strftime_buf), "%F_%H.%M.%S", &timeinfo);
+
+  // Path where new picture will be saved in SD Card
+  char path[100];
+  sprintf(path, "/picture%s.jpg", strftime_buf);
+
+  fs::FS &fs = SD_MMC;
+  Serial.printf("Picture file name: %s\n", path);
+  
+  File file = fs.open(path, FILE_WRITE);
+  if(!file){
+    Serial.println("Failed to open file in writing mode");
+  } 
+  else {
+    file.write(fb->buf, fb->len); // payload (image), payload length
+    Serial.printf("Saved file to path: %s\n", path);
+  }
+  file.close();
+  esp_camera_fb_return(fb); 
+  
+  // Turns off the ESP32-CAM white on-board LED (flash) connected to GPIO 4
+  pinMode(4, OUTPUT);
+  digitalWrite(4, LOW);
 }
 
 void camera_setup() {
@@ -156,49 +231,11 @@ void camera_setup() {
     return;
   }
   
-  //Serial.println("Starting SD Card");
-  if(!SD_MMC.begin()){
-    Serial.println("SD Card Mount Failed");
-    return;
-  }
-  
-  uint8_t cardType = SD_MMC.cardType();
-  if(cardType == CARD_NONE){
-    Serial.println("No SD Card attached");
-    return;
-  }
-    
-  camera_fb_t * fb = NULL;
-  
-  // Take Picture with Camera
-  fb = esp_camera_fb_get();  
-  if(!fb) {
-    Serial.println("Camera capture failed");
-    return;
-  }
+  SD_MMC_init();
 
-  strftime(strftime_buf, sizeof(strftime_buf), "%F_%H.%M.%S", &timeinfo);
-
-  // Path where new picture will be saved in SD Card
-  char path[100];
-  sprintf(path, "/picture%s_%s.jpg", devname, strftime_buf);
-
-  fs::FS &fs = SD_MMC; 
-  Serial.printf("Picture file name: %s\n", path);
-  
-  File file = fs.open(path, FILE_WRITE);
-  if(!file){
-    Serial.println("Failed to open file in writing mode");
-  } 
-  else {
-    file.write(fb->buf, fb->len); // payload (image), payload length
-    Serial.printf("Saved file to path: %s\n", path);
+  for (int i=0; i<10; i++){
+    Serial.printf("loop: %d", i);
+    delay(30);
+    SD_MMC_save();
   }
-  file.close();
-  esp_camera_fb_return(fb); 
-  
-  // Turns off the ESP32-CAM white on-board LED (flash) connected to GPIO 4
-  pinMode(4, OUTPUT);
-  digitalWrite(4, LOW);
-
 }
